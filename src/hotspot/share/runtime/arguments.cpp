@@ -2286,6 +2286,10 @@ bool Arguments::parse_options_for_restore(const JavaVMInitArgs* args) {
       } else {
         add_property(tail);
       }
+
+      if (key != tail) {
+        FreeHeap(const_cast<char *>(key));
+      }
     } else if (match_option(option, "-XX:", &tail)) { // -XX:xxxx
       // Skip -XX:Flags= and -XX:VMOptionsFile= since those cases have
       // already been handled
