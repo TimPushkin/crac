@@ -409,7 +409,7 @@ void Threads::initialize_jsr292_core_classes(TRAPS) {
 }
 
 jint Threads::check_for_restore(JavaVMInitArgs* args) {
-  if (Arguments::is_restore_option_set(args)) {
+  if (Arguments::has_classic_restore_request(args)) {
     if (!Arguments::parse_options_for_restore(args)) {
       return JNI_ERR;
     }
@@ -426,6 +426,7 @@ jint Threads::check_for_restore(JavaVMInitArgs* args) {
 jint Threads::create_vm(JavaVMInitArgs* args, bool* canTryAgain) {
   extern void JDK_Version_init();
 
+  // Perform classic CRaC restore if requested
   if (check_for_restore(args) != JNI_OK) return JNI_ERR;
 
   // Preinitialize version info.
@@ -760,6 +761,15 @@ jint Threads::create_vm(JavaVMInitArgs* args, bool* canTryAgain) {
 
   // Final system initialization including security manager and system class loader
   call_initPhase3(CHECK_JNI_ERR);
+
+  // Perform portable CRaC restore if requested
+  // TODO integrate this with initPhase3 to restore system class loader and
+  // security manager
+  if (CRaCRestoreFrom != nullptr && crac::is_portable_mode()) {
+    // TODO honor CRaCIgnoreRestoreIfUnavailable (will have to differentiate
+    // between errors and exceptions)
+    crac::restore_portable(CHECK_JNI_ERR);
+  }
 
   // cache the system and platform class loaders
   SystemDictionary::compute_java_loaders(CHECK_JNI_ERR);
