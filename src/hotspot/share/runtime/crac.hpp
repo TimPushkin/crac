@@ -54,6 +54,8 @@ public:
     return javaTimeNanos_offset;
   }
 
+  static void initialize_time_counters();
+
   // Portable mode
 
   // Restores classes and objects.

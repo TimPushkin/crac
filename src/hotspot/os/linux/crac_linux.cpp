@@ -22,6 +22,8 @@
  */
 
 // no precompiled headers
+#include <string.h>
+
 #include "jvm.h"
 #include "perfMemory_linux.hpp"
 #include "runtime/crac_structs.hpp"
@@ -31,6 +33,8 @@
 #include "logging/log.hpp"
 #include "logging/logConfiguration.hpp"
 #include "classfile/classLoader.hpp"
+
+#include <netinet/in.h>
 
 class FdsInfo {
 public:
@@ -310,6 +314,14 @@ bool VM_Crac::check_fds() {
     const char* type = stat2strtype(st->st_mode);
     int linkret = readfdlink(fd, detailsbuf, sizeof(detailsbuf));
     const char* details = 0 < linkret ? detailsbuf : "";
+    {
+      sockaddr_in sa;
+      socklen_t slen = sizeof(sa);
+      if (S_ISSOCK(st->st_mode) && 0 == getsockname(fd, (sockaddr*)&sa, &slen)) {
+        const size_t len = strlen(detailsbuf);
+        snprintf(detailsbuf + len, sizeof(detailsbuf) - len, ",port=%d", (int)ntohs(sa.sin_port));
+      }
+    }
     print_resources("JVM: FD fd=%d type=%s path=\"%s\" ", fd, type, details);
 
     if (is_claimed_fd(fd)) {
@@ -329,6 +341,28 @@ bool VM_Crac::check_fds() {
       }
     }
 
+    if (CRAllowedOpenFilePrefixes != nullptr) {
+      const char *prefix = CRAllowedOpenFilePrefixes;
+      // JDK appends to ccstrlist using newline, on command line that would be comma
+      size_t prefix_length = strcspn(prefix, ",\n");
+      bool matched = false;
+      while (prefix_length > 0) {
+        if (!strncmp(details, prefix, prefix_length)) {
+          matched = true;
+          break;
+        }
+        if (prefix[prefix_length] == '\0') {
+          break;
+        }
+        prefix += prefix_length + 1;
+        prefix_length = strcspn(prefix, ",\n");
+      }
+      if (matched) {
+        print_resources("OK: allowed in -XX:CRAllowedOpenFilePrefixes\n");
+        continue;
+      }
+    }
+
     print_resources("BAD: opened by application\n");
     ok = false;
 
@@ -344,7 +378,7 @@ bool VM_Crac::check_fds() {
 }
 
 bool VM_Crac::memory_checkpoint() {
-  return PerfMemoryLinux::checkpoint(CRaCCheckpointTo);
+  return PerfMemoryLinux::checkpoint();
 }
 
 void VM_Crac::memory_restore() {
