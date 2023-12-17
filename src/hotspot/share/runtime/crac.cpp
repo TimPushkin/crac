@@ -41,6 +41,7 @@
 #include "oops/instanceKlass.hpp"
 #include "oops/method.hpp"
 #include "oops/oopsHierarchy.hpp"
+#include "os.inline.hpp"
 #include "runtime/crac.hpp"
 #include "runtime/crac_structs.hpp"
 #include "runtime/deoptimization.hpp"
@@ -71,9 +72,6 @@
 #include "utilities/macros.hpp"
 #include "utilities/stackDumpParser.hpp"
 #include "utilities/stackDumper.hpp"
-#ifdef LINUX
-#include "os_linux.hpp"
-#endif
 
 // Filenames used by the portble mode
 static constexpr char PMODE_HEAP_DUMP_FILENAME[] = "heap.hprof";
@@ -557,6 +555,18 @@ Handle crac::checkpoint(jarray fd_arr, jobjectArray obj_arr, bool dry_run, jlong
   Universe::heap()->collect(GCCause::_full_gc_alot);
   Universe::heap()->set_cleanup_unused(false);
   Universe::heap()->finish_collection();
+
+  if (os::can_trim_native_heap()) {
+    os::size_change_t sc;
+    if (os::trim_native_heap(&sc)) {
+      if (sc.after != SIZE_MAX) {
+        const size_t delta = sc.after < sc.before ? (sc.before - sc.after) : (sc.after - sc.before);
+        const char sign = sc.after < sc.before ? '-' : '+';
+        log_info(crac)("Trim native heap before checkpoint: " PROPERFMT "->" PROPERFMT " (%c" PROPERFMT ")",
+                        PROPERFMTARGS(sc.before), PROPERFMTARGS(sc.after), sign, PROPERFMTARGS(delta));
+      }
+    }
+  }
 
   AsyncLogWriter* aio_writer = AsyncLogWriter::instance();
   if (aio_writer) {
