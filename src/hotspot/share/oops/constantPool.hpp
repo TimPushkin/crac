@@ -82,6 +82,7 @@ class ConstantPool : public Metadata {
   friend class BytecodeInterpreter;  // Directly extracts a klass in the pool for fast instanceof/checkcast
   friend class Universe;             // For null constructor
   friend class ClassPrelinker;       // CDS
+  friend class CracInstanceClassDumpParser;
  private:
   // If you add a new field that points to any metaspace object, you
   // must add this field to ConstantPool::metaspace_pointers_do().
@@ -277,6 +278,8 @@ class ConstantPool : public Metadata {
 
   // Hidden class support:
   void klass_at_put(int class_index, Klass* k);
+  // Portable CRaC support:
+  Klass* klass_at_put_and_get(int class_index, Klass* k);
 
   void unresolved_klass_at_put(int cp_index, int name_index, int resolved_klass_index) {
     release_tag_at_put(cp_index, JVM_CONSTANT_UnresolvedClass);
