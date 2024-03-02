@@ -1,5 +1,6 @@
 #include "precompiled.hpp"
 #include "classfile/javaClasses.hpp"
+#include "interpreter/bytecodes.hpp"
 #include "logging/log.hpp"
 #include "memory/allocation.hpp"
 #include "memory/resourceArea.hpp"
@@ -18,6 +19,13 @@
 #include "utilities/debug.hpp"
 #include "utilities/globalDefinitions.hpp"
 #include "utilities/growableArray.hpp"
+#include "utilities/methodKind.hpp"
+
+static uintptr_t oop2uint(oop o) {
+  STATIC_ASSERT(sizeof(uintptr_t) == sizeof(intptr_t)); // Primitive stack slots
+  STATIC_ASSERT(sizeof(uintptr_t) == oopSize);          // IDs
+  return cast_from_oop<uintptr_t>(o);
+}
 
 // Retrieves Java vframes from all non-internal Java threads in the VM.
 class ThreadStackStream : public StackObj {
@@ -31,69 +39,67 @@ class ThreadStackStream : public StackObj {
       _thread_i++;
     }
 
+    JavaThread *thread;
     for (; _thread_i < _tlh.length(); _thread_i++) {
-      JavaThread *thread = _tlh.thread_at(_thread_i);
-      if (!should_include(thread)) {
-        if (log_is_enabled(Debug, crac, stacktrace, dump)) {
-          ResourceMark rm;
-          log_debug(crac, stacktrace, dump)("Skipping thread %p (%s)", thread, thread->name());
-        }
-        continue;
-      }
-      if (thread->thread_state() < _thread_in_Java) {
-        if (log_is_enabled(Debug, crac, stacktrace, dump)) {
-          ResourceMark rm;
-          log_debug(crac, stacktrace, dump)("Thread %p (%s) not in Java: state = %i",
-                               thread, thread->name(), thread->thread_state());
-        }
-        return Status::NON_JAVA_ON_TOP;
+      thread = _tlh.thread_at(_thread_i);
+      assert(thread->thread_state() == _thread_in_native || thread->thread_state() == _thread_blocked,
+             "must be on safepoint: either blocked or in native code");
+      if (should_include(*thread)) {
+        break;
       }
       if (log_is_enabled(Debug, crac, stacktrace, dump)) {
         ResourceMark rm;
-        log_debug(crac, stacktrace, dump)("Will try to dump thread %p (%s): state = %i",
-                             thread, thread->name(), thread->thread_state());
+        log_debug(crac, stacktrace, dump)("Skipping thread " UINTX_FORMAT " (%s)", oop2uint(thread->threadObj()), thread->name());
       }
+    }
+    if (_thread_i == _tlh.length()) {
+      return Status::END;
+    }
+    postcond(thread != nullptr);
 
-      _frames.clear();
-      vframeStream vfs(thread, /* stop_at_java_call_stub = */ true);
-      for (; !vfs.at_end(); vfs.next()) {
-        if (!vfs.method()->is_native()) {
-          if (vfs.method()->is_old()) {
-            ResourceMark rm;
-            log_warning(crac, stacktrace, dump)("JVM TI support will be required on restore: thread %s executes an old version of %s",
-                                                thread->name(), vfs.method()->external_name());
-            Unimplemented(); // TODO extend dump format with method holder's redefinition version
-          }
-          _frames.push(vfs.asJavaVFrame());
-        } else {
-          guarantee(_frames.is_empty(), "Native frame must be the youngest in the series of Java frames");
-          if (log_is_enabled(Debug, crac, stacktrace, dump)) {
-            ResourceMark rm;
-            log_debug(crac, stacktrace, dump)("Thread %p (%s) not in Java: its current method %s is native",
-                                 thread, thread->name(), vfs.method()->external_name());
-          }
-          return Status::NON_JAVA_ON_TOP;
-        }
-      }
-
-      if (_frames.is_empty() || vfs.reached_first_entry_frame()) {
-        return Status::OK;
-      }
-
-      if (log_is_enabled(Debug, crac, stacktrace, dump)) {
-        ResourceMark rm;
-        log_debug(crac, stacktrace, dump)("Thread %p (%s) has intermediate non-Java frame after %i Java frames",
-                             thread, thread->name(), _frames.length());
-      }
-      return Status::NON_JAVA_IN_MID;
+    if (log_is_enabled(Debug, crac, stacktrace, dump)) {
+      ResourceMark rm;
+      log_debug(crac, stacktrace, dump)("Dumping thread " UINTX_FORMAT " (%s): state = %s",
+                                        oop2uint(thread->threadObj()), thread->name(), thread->thread_state_name());
     }
 
-    postcond(_thread_i == _tlh.length());
-    return Status::END;
-  }
+    _frames.clear();
+    vframeStream vfs(thread, /*stop_at_java_call_stub=*/ true);
 
-  JavaThread *thread()                            const { assert(_started, "Call next() first"); return _tlh.thread_at(_thread_i); }
-  const GrowableArrayView<javaVFrame *> &frames() const { assert(_started, "Call next() first"); return _frames; };
+    if (!vfs.at_end() && vfs.method()->is_native()) {
+      if (log_is_enabled(Debug, crac, stacktrace, dump)) {
+        ResourceMark rm;
+        log_debug(crac, stacktrace, dump)("Thread " UINTX_FORMAT " (%s) is executing native method %s",
+                                          oop2uint(thread->threadObj()), thread->name(), vfs.method()->external_name());
+      }
+      return Status::NON_JAVA_ON_TOP;
+    }
+
+    for (; !vfs.at_end(); vfs.next()) {
+      assert(!vfs.method()->is_native(), "only the youngest frame can be native");
+      if (vfs.method()->is_old()) {
+        ResourceMark rm;
+        log_warning(crac, stacktrace, dump)("JVM TI support will be required on restore: thread %s executes an old version of %s",
+                                            thread->name(), vfs.method()->external_name());
+        Unimplemented(); // TODO extend dump format with method holder's redefinition version
+      }
+      _frames.push(vfs.asJavaVFrame());
+    }
+
+    if (_frames.is_empty() || vfs.reached_first_entry_frame()) {
+      return Status::OK;
+    }
+
+    if (log_is_enabled(Debug, crac, stacktrace, dump)) {
+      ResourceMark rm;
+      log_debug(crac, stacktrace, dump)("Thread " UINTX_FORMAT " (%s) has intermediate non-Java frame after %i Java frames",
+                                        oop2uint(thread->threadObj()), thread->name(), _frames.length());
+    }
+    return Status::NON_JAVA_IN_MID;
+}
+
+  JavaThread *thread()                            const { assert(_started, "call next() first"); return _tlh.thread_at(_thread_i); }
+  const GrowableArrayView<javaVFrame *> &frames() const { assert(_started, "call next() first"); return _frames; };
 
  private:
   bool _started = false;
@@ -101,7 +107,8 @@ class ThreadStackStream : public StackObj {
   uint _thread_i = 0;
   GrowableArray<javaVFrame *> _frames;
 
-  static bool should_include(JavaThread *thread) {
+  // Whether this thread should be included in the dump.
+  static bool should_include(const JavaThread &thread) {
     ResourceMark rm; // Thread name
     // TODO for now we only include the main thread, but there seems to be no
     //  way to reliably determine that a thread is the main thread.
@@ -115,8 +122,8 @@ class ThreadStackStream : public StackObj {
     //     (strcmp(thread->name(), "Notification Thread") == 0 && java_lang_Thread::threadGroup(thread->threadObj()) == Universe::system_thread_group())) {
     //   continue;
     // }
-    return !thread->is_exiting() &&
-           java_lang_Thread::threadGroup(thread->threadObj()) == Universe::main_thread_group() && strcmp(thread->name(), "main") == 0;
+    return !thread.is_exiting() &&
+           java_lang_Thread::threadGroup(thread.threadObj()) == Universe::main_thread_group() && strcmp(thread.name(), "main") == 0;
   }
 };
 
@@ -142,56 +149,53 @@ class StackDumpWriter : public StackObj {
   }
 
   bool write_stack(const JavaThread *thread, const GrowableArrayView<javaVFrame *> &frames) {
-    log_trace(crac, stacktrace, dump)("Stack for thread " UINTX_FORMAT " - %s",
-                                      cast_from_oop<uintptr_t>(thread->threadObj()), thread->name());
+    log_trace(crac, stacktrace, dump)("Stack for thread " UINTX_FORMAT " (%s)", oop2uint(thread->threadObj()), thread->name());
     WRITE(oop2uint(thread->threadObj())); // Thread ID
-
-    // Whether the current bytecode in the youngest frame is to be re-executed
-    if (frames.length() == 0) {
-      log_trace(crac, stacktrace, dump)("Re-exec youngest: false (empty trace)");
-      WRITE_CASTED(u1, false);
-    } else if (frames.first()->is_interpreted_frame()) {
-      // TODO is it true that we always want to re-execute?
-      log_trace(crac, stacktrace, dump)("Re-exec youngest: true (interpreted frame)");
-      WRITE_CASTED(u1, true);
-    } else {
-      // TODO investigate whether the exec_mode used by deoptimization to decide
-      //  on re-execution is also required for us here
-      bool should_reexecute = compiledVFrame::cast(frames.first())->should_reexecute();
-      log_trace(crac, stacktrace, dump)("Re-exec youngest: %s (should_reexecute of compiled frame)", BOOL_TO_STR(should_reexecute));
-      WRITE_CASTED(u1, should_reexecute);
-    }
 
     log_trace(crac, stacktrace, dump)("%i frames", frames.length());
     WRITE_CASTED(u4, frames.length()); // Number of frames in the stack
 
-    for (const javaVFrame *frame : frames) {
+    for (int i = 0; i < frames.length(); i++) {
+      const javaVFrame &frame = *frames.at(i);
       if (log_is_enabled(Trace, crac, stacktrace, dump)) {
-        if (frame->is_interpreted_frame()) {
+        if (frame.is_interpreted_frame()) {
           log_trace(crac, stacktrace, dump)("== Interpreted frame ==");
         } else {
-          precond(frame->is_compiled_frame());
+          precond(frame.is_compiled_frame());
           log_trace(crac, stacktrace, dump)("==  Compiled frame   ==");
           // TODO use Deoptimization::realloc_objects(...) to rematerialize
           //  scalar-replaced objects
         }
       }
 
-      if (!write_method(*frame)) {
+      if (!write_method(frame)) {
         return false;
       }
 
-      guarantee(frame->bci() <= UINT16_MAX, "Guaranteed by JVMS §4.7.3 (code_length max value)");
-      log_trace(crac, stacktrace, dump)("BCI: %i", frame->bci());
-      WRITE_CASTED(u2, frame->bci());
+      u2 bci = checked_cast<u2>(frame.bci()); // u2 is enough -- guaranteed by JVMS §4.7.3 (code_length max value)
+      // If this is the youngest frame and the current bytecode has already been
+      // executed move to the next one
+      // TODO investigate whether:
+      //  1. For interpreted frame, is it always right to re-execute?
+      //  2. For compiled frame, is exec_mode used by deoptimization to decide
+      //     on re-execution also important for us here?
+      if (i == 0 && frame.is_compiled_frame() && !static_cast<const compiledVFrame &>(frame).should_reexecute()) {
+        const int code_len = Bytecodes::length_at(frame.method(), frame.method()->bcp_from(frame.bci()));
+        log_trace(crac, stacktrace, dump)("moving BCI: %i -> %i", bci, bci + code_len);
+        assert(bci + code_len <= UINT16_MAX, "overflow");
+        bci += code_len;
+      }
+      guarantee(frame.method()->validate_bci(bci) >= 0, "invalid BCI %i for %s", bci, frame.method()->external_name());
+      log_trace(crac, stacktrace, dump)("BCI: %i (%s)", bci, Bytecodes::name(frame.method()->java_code_at(bci)));
+      WRITE(bci);
 
       log_trace(crac, stacktrace, dump)("Locals:");
-      if (!write_stack_values(*frame->locals())) {
+      if (!write_stack_values(*frame.locals())) {
         return false;
       }
 
       log_trace(crac, stacktrace, dump)("Operands:");
-      if (!write_stack_values(*frame->expressions())) {
+      if (!write_stack_values(*frame.expressions())) {
         return false;
       }
 
@@ -205,19 +209,13 @@ class StackDumpWriter : public StackObj {
   }
 
  private:
-  static uintptr_t oop2uint(oop o) {
-    STATIC_ASSERT(sizeof(uintptr_t) == sizeof(intptr_t)); // Primitive stack slots
-    STATIC_ASSERT(sizeof(uintptr_t) == oopSize);          // IDs
-    return cast_from_oop<uintptr_t>(o);
-  }
-
   bool write_method(const javaVFrame &frame) {
     Method *method = frame.method();
 
     Symbol *name = method->name();
     if (log_is_enabled(Trace, crac, stacktrace, dump)) {
       ResourceMark rm;
-      log_trace(crac, stacktrace, dump)("Method name: " UINTX_FORMAT " - %s",  reinterpret_cast<uintptr_t>(name), name->as_C_string());
+      log_trace(crac, stacktrace, dump)("Method name: " UINTX_FORMAT " - %s", reinterpret_cast<uintptr_t>(name), name->as_C_string());
     }
     WRITE(reinterpret_cast<uintptr_t>(name));
 
@@ -228,10 +226,14 @@ class StackDumpWriter : public StackObj {
     }
     WRITE(reinterpret_cast<uintptr_t>(signature));
 
+    const MethodKind::Enum kind = MethodKind::of_method(*method);
+    log_trace(crac, stacktrace, dump)("Method kind: %s", MethodKind::name(kind));
+    WRITE(checked_cast<u1>(kind));
+
     InstanceKlass *holder = method->method_holder();
     if (log_is_enabled(Trace, crac, stacktrace, dump)) {
       ResourceMark rm;
-      log_trace(crac, stacktrace, dump)("Class: " UINTX_FORMAT " - %s", cast_from_oop<uintptr_t>(holder->java_mirror()), holder->external_name());
+      log_trace(crac, stacktrace, dump)("Class: " UINTX_FORMAT " - %s", oop2uint(holder->java_mirror()), holder->external_name());
     }
     WRITE(oop2uint(holder->java_mirror()));
 
@@ -239,7 +241,7 @@ class StackDumpWriter : public StackObj {
   }
 
   bool write_stack_values(const StackValueCollection &values) {
-    guarantee(values.size() <= UINT16_MAX, "Guaranteed by JVMS §4.11");
+    assert(values.size() <= UINT16_MAX, "guaranteed by JVMS §4.11");
     log_trace(crac, stacktrace, dump)("%i values", values.size());
     WRITE_CASTED(u2, values.size());
 
@@ -248,13 +250,13 @@ class StackDumpWriter : public StackObj {
       switch (value.type()) {
         case T_INT:
           log_trace(crac, stacktrace, dump)("  %i - primitive: " INTX_FORMAT " (intptr), " INT32_FORMAT " (jint), " UINTX_FORMAT_X " (hex)",
-                               i, value.get_intptr(), value.get_jint(), value.get_intptr());
+                                            i, value.get_intptr(), value.get_jint(), value.get_intptr());
           WRITE_CASTED(u1, DumpedStackValueType::PRIMITIVE);
           WRITE_CASTED(uintptr_t, value.get_intptr()); // Write the whole slot, i.e. 4 or 8 bytes
           break;
         case T_OBJECT:
           log_trace(crac, stacktrace, dump)("  %i - oop: " UINTX_FORMAT "%s",
-                               i, cast_from_oop<uintptr_t>(value.get_obj()()), value.obj_is_scalar_replaced() ? " (scalar-replaced)" : "");
+                                            i, oop2uint(value.get_obj()()), value.obj_is_scalar_replaced() ? " (scalar-replaced)" : "");
           guarantee(!value.obj_is_scalar_replaced(), "Scalar-replaced objects should have been rematerialized");
           WRITE_CASTED(u1, DumpedStackValueType::REFERENCE);
           WRITE(oop2uint(value.get_obj()()));
@@ -280,8 +282,8 @@ class StackDumpWriter : public StackObj {
 };
 
 CracStackDumper::Result CracStackDumper::dump(const char *path, bool overwrite) {
-  guarantee(SafepointSynchronize::is_at_safepoint(),
-            "Need safepoint so threads won't change their states after we check them");
+  assert(SafepointSynchronize::is_at_safepoint(),
+         "need safepoint so threads won't change their states after we check them");
   log_info(crac, stacktrace, dump)("Dumping thread stacks into %s", path);
 
   FileBasicTypeWriter file_writer;
