@@ -530,6 +530,8 @@ class SerializeClosure;
   template(jvmti_is_in_VTMS_transition_name,          "jvmti_is_in_VTMS_transition")              \
   template(module_entry_name,                         "module_entry")                             \
   template(resolved_references_name,                  "<resolved_references>")                    \
+  template(hash_name,                                 "<hash>")                                   \
+  template(is_interned_name,                          "<is_interned>")                            \
   template(internal_name_name,                        "<name>")                                   \
   template(internal_signature_name,                   "<signature>")                              \
   template(internal_kind_name,                        "<kind>")                                   \
@@ -662,6 +664,7 @@ class SerializeClosure;
   template(executable_signature,                      "Ljava/lang/reflect/Executable;")                           \
   template(module_signature,                          "Ljava/lang/Module;")                                       \
   template(concurrenthashmap_signature,               "Ljava/util/concurrent/ConcurrentHashMap;")                 \
+  template(arraylist_signature,                       "Ljava/util/ArrayList;")                                    \
   template(String_StringBuilder_signature,            "(Ljava/lang/String;)Ljava/lang/StringBuilder;")            \
   template(int_StringBuilder_signature,               "(I)Ljava/lang/StringBuilder;")                             \
   template(char_StringBuilder_signature,              "(C)Ljava/lang/StringBuilder;")                             \

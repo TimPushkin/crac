@@ -34,7 +34,7 @@ struct HeapDumpClasses : public AllStatic {
     DEBUG_ONLY(HeapDump::ID _java_lang_ClassLoader_id = HeapDump::NULL_ID);
 
    public:
-    void ensure_initialized(const ParsedHeapDump &heap_dump, HeapDump::ID java_lang_ClassLoader_id);
+    void ensure_initialized(const ParsedHeapDump &heap_dump, HeapDump::ID loader_class_id);
     CLASSLOADER_DUMP_FIELDS_DO(DECLARE_GET_FIELD_METHOD)
 
    private:
@@ -75,6 +75,26 @@ struct HeapDumpClasses : public AllStatic {
       // Void is the only "primitive type" without an array class
       return is_primitive_kind(dump) && array_klass(dump) == 0;
     }
+
+   private:
+    bool is_initialized() const { return _id_size > 0; }
+  };
+
+
+#define STRING_DUMP_FIELDS_DO(macro)                                                            \
+  macro(java_lang_String, is_interned, vmSymbols::is_interned_name(), T_BOOLEAN, bool, boolean)
+
+  // Requires the heap dump to include injected fields.
+  class java_lang_String {
+   private:
+    u4 _id_size = 0;
+    STRING_DUMP_FIELDS_DO(DEFINE_OFFSET_FIELD)
+    DEBUG_ONLY(HeapDump::ID _java_lang_String_id = HeapDump::NULL_ID);
+
+   public:
+    void ensure_initialized(const ParsedHeapDump &heap_dump, HeapDump::ID java_lang_String_id);
+
+    STRING_DUMP_FIELDS_DO(DECLARE_GET_FIELD_METHOD)
 
    private:
     bool is_initialized() const { return _id_size > 0; }
@@ -137,6 +157,26 @@ struct HeapDumpClasses : public AllStatic {
 
     bool is_field(const HeapDump::InstanceDump &dump) const;
     bool is_resolved(const HeapDump::InstanceDump &dump) const { return resolution(dump) == HeapDump::NULL_ID; }
+
+   private:
+    bool is_initialized() const { return _id_size > 0; }
+  };
+
+
+#define METHODTYPE_DUMP_FIELDS_DO(macro)                                                  \
+  macro(java_lang_invoke_MethodType, rtype, "rtype", T_OBJECT, HeapDump::ID, object_id)   \
+  macro(java_lang_invoke_MethodType, ptypes, "ptypes", T_OBJECT, HeapDump::ID, object_id)
+
+  class java_lang_invoke_MethodType {
+   private:
+    u4 _id_size = 0;
+    METHODTYPE_DUMP_FIELDS_DO(DEFINE_OFFSET_FIELD)
+    DEBUG_ONLY(HeapDump::ID _java_lang_invoke_MethodType_id = HeapDump::NULL_ID);
+
+   public:
+    void ensure_initialized(const ParsedHeapDump &heap_dump, HeapDump::ID java_lang_invoke_MethodType_id);
+
+    METHODTYPE_DUMP_FIELDS_DO(DECLARE_GET_FIELD_METHOD)
 
    private:
     bool is_initialized() const { return _id_size > 0; }
