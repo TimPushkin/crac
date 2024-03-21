@@ -1,5 +1,6 @@
 #include "precompiled.hpp"
 #include "classfile/javaClasses.hpp"
+#include "classfile/vmIntrinsics.hpp"
 #include "classfile/vmSymbols.hpp"
 #include "interpreter/bytecodes.hpp"
 #include "logging/log.hpp"
@@ -149,9 +150,12 @@ class ThreadStackStream : public StackObj {
   static bool is_special_native_method(const Method &m) {
     precond(m.is_native());
     const InstanceKlass &holder = *m.method_holder();
-    return holder.name() == vmSymbols::jdk_crac_Core() &&
-           holder.class_loader_data()->is_the_null_class_loader_data() &&
-           m.name() == vmSymbols::checkpointRestore0_name();
+    return // CRaC's C/R method
+           (holder.name() == vmSymbols::jdk_crac_Core() &&
+            holder.class_loader_data()->is_the_null_class_loader_data() &&
+            m.name() == vmSymbols::checkpointRestore0_name()) ||
+           // Unsafe.park(...)
+           m.intrinsic_id() == vmIntrinsics::_park;
   }
 };
 
@@ -207,8 +211,8 @@ class StackDumpWriter : public StackObj {
       //  1. For interpreted frame, is it always right to re-execute?
       //  2. For compiled frame, is exec_mode used by deoptimization to decide
       //     on re-execution also important for us here?
-      if (i == 0 && frame.is_compiled_frame() && !static_cast<const compiledVFrame &>(frame).should_reexecute()) {
-        assert(!frame.method()->is_native(), "native methods are not compiled");
+      if (i == 0 && !frame.method()->is_native() &&
+          frame.is_compiled_frame() && !static_cast<const compiledVFrame &>(frame).should_reexecute()) {
         const int code_len = Bytecodes::length_at(frame.method(), frame.method()->bcp_from(frame.bci()));
         log_trace(crac, stacktrace, dump)("moving BCI: %i -> %i", bci, bci + code_len);
         assert(bci + code_len <= UINT16_MAX, "overflow");
