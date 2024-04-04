@@ -31,6 +31,7 @@
 #include "utilities/macros.hpp"
 #ifdef ASSERT
 #include "classfile/vmClasses.hpp"
+#include "classfile_constants.h"
 #include "interpreter/bytecodes.hpp"
 #include "oops/fieldInfo.hpp"
 #include "oops/fieldStreams.hpp"
@@ -57,16 +58,25 @@ static int count_overpasses(const Array<Method *> &methods) {
 }
 
 static void assert_constants_match(const ConstantPool &cp1, const ConstantPool &cp2) {
-  assert(cp1.length() == cp2.length(), "number of constants differs: %i != %i", cp1.length(), cp2.length());
+  precond(cp1.pool_holder()->name() == cp2.pool_holder()->name());
+#ifdef ASSERT
+  if (cp1.length() != cp2.length()) {
+    cp1.print();
+    cp2.print();
+    fatal("%s: number of constants differs: %i != %i (constants dumped to stdout)",
+          cp1.pool_holder()->external_name(), cp1.length(), cp2.length());
+  }
+#endif // ASSERT
 
   // Constant pool consists of two parts: the first one comes from the class
   // file while the second one is appended when generating overpass methods. We
   // can only compare the first one because the second is not portable: the
-  // order in which overpasses are generated, and thus in which the their
-  // constants are appended, depends on methods in supers and interfaces which
-  // depends on the layout of method name symbols in memory).
+  // order in which overpasses are generated, and thus in which their constants
+  // are appended, depends on methods in supers and interfaces which depends on
+  // the layout of method name symbols in memory).
   const int num_overpasses = count_overpasses(*cp1.pool_holder()->methods());
-  assert(num_overpasses == count_overpasses(*cp2.pool_holder()->methods()), "number of overpass methods differ");
+  assert(num_overpasses == count_overpasses(*cp2.pool_holder()->methods()), "%s: number of overpass methods differs",
+         cp1.pool_holder()->external_name());
   // An overpass method may need up to this many new constants:
   // 1. 2 for method's name and type.
   // 2. 8 for method's code (see BytecodeAssembler::assemble_method_error()):
@@ -95,35 +105,78 @@ static void assert_constants_match(const ConstantPool &cp1, const ConstantPool &
     // the version re-created from the dump may have more entries resolved than
     // the pre-defined one (or vise versa)
     assert(cp1.tag_at(i).external_value() == cp2.tag_at(i).external_value(),
-           "incompatible constant pool tags at slot #%i: %s and %s",
-           i, cp1.tag_at(i).internal_name(), cp2.tag_at(i).internal_name());
+           "%s: incompatible constant pool tags at slot #%i: %s and %s",
+           cp1.pool_holder()->external_name(), i, cp1.tag_at(i).internal_name(), cp2.tag_at(i).internal_name());
+    // TODO these should be asserts but in the current demos they are sometimes
+    //  violated without breaking anything because we don't properly handle
+    //  platform-dependent JDK classes yet
+    switch (cp1.tag_at(i).value()) {
+      case JVM_CONSTANT_Utf8:
+        if (cp1.symbol_at(i) != cp2.symbol_at(i)) {
+          ResourceMark rm;
+          log_warning(crac, class)("%s: different symbols at constant pool slot #%i: \"%s\" != \"%s\"",
+                                   cp1.pool_holder()->external_name(), i, cp1.symbol_at(i)->as_C_string(), cp2.symbol_at(i)->as_C_string());
+        }
+        break;
+      case JVM_CONSTANT_Integer:
+        if (cp1.int_at(i) != cp2.int_at(i)) {
+          ResourceMark rm;
+          log_warning(crac, class)("%s: different integers at constant pool slot #%i: %i != %i",
+                                   cp1.pool_holder()->external_name(), i, cp1.int_at(i), cp2.int_at(i));
+        }
+        break;
+      case JVM_CONSTANT_Float:
+        if (cp1.float_at(i) != cp2.float_at(i) && !(g_isnan(cp1.float_at(i)) != 0 && g_isnan(cp2.float_at(i)) != 0)) {
+          ResourceMark rm;
+          log_warning(crac, class)("%s: different floats at constant pool slot #%i: %f != %f",
+                                   cp1.pool_holder()->external_name(), i, cp1.float_at(i), cp2.float_at(i));
+        }
+        break;
+      case JVM_CONSTANT_Long:
+        if (cp1.long_at(i) != cp2.long_at(i)) {
+          ResourceMark rm;
+          log_warning(crac, class)("%s: different longs at constant pool slot #%i: " JLONG_FORMAT " != " JLONG_FORMAT,
+                                   cp1.pool_holder()->external_name(), i, cp1.long_at(i), cp2.long_at(i));
+        }
+        break;
+      case JVM_CONSTANT_Double:
+        if (cp1.double_at(i) != cp2.double_at(i) && !(g_isnan(cp1.double_at(i)) != 0 && g_isnan(cp2.double_at(i)) != 0)) {
+          ResourceMark rm;
+          log_warning(crac, class)("%s: different doubles at constant pool slot #%i: %lf != %lf",
+                                   cp1.pool_holder()->external_name(), i, cp1.double_at(i), cp2.double_at(i));
+        }
+        break;
+      default: ; // TODO other types
+    }
   }
 }
 
 static void assert_fields_match(const InstanceKlass &ik1, const InstanceKlass &ik2) {
+  precond(ik1.name() == ik2.name());
   AllFieldStream fs1(&ik1);
   AllFieldStream fs2(&ik2);
-  assert(fs1.num_total_fields() == fs2.num_total_fields(), "number of fields differs: %i != %i",
-         fs1.num_total_fields(), fs2.num_total_fields());
+  assert(fs1.num_total_fields() == fs2.num_total_fields(), "%s: number of fields differs: %i != %i",
+         ik1.external_name(), fs1.num_total_fields(), fs2.num_total_fields());
   for (; !fs1.done() && !fs2.done(); fs1.next(), fs2.next()) {
     assert(fs1.index() == fs2.index(), "must be");
-    assert(fs1.name() == fs2.name() && fs1.signature() == fs2.signature(), "field %i differs: %s %s and %s %s",
-           fs1.index(), fs1.signature()->as_C_string(), fs1.name()->as_C_string(), fs2.signature()->as_C_string(), fs2.name()->as_C_string());
-    assert(fs1.access_flags().get_flags() == fs2.access_flags().get_flags(), "different access flags of field %i: " INT32_FORMAT_X " != " INT32_FORMAT_X,
-           fs1.index(), fs1.access_flags().get_flags(), fs2.access_flags().get_flags());
-    assert(fs1.field_flags().as_uint() == fs2.field_flags().as_uint(), "different internal flags of field %i (%s %s): " UINT32_FORMAT_X " != " UINT32_FORMAT_X,
-           fs1.index(), fs1.signature()->as_C_string(), fs1.name()->as_C_string(), fs1.field_flags().as_uint(), fs2.field_flags().as_uint());
-    assert(fs1.offset() == fs2.offset(), "different offset of field %i (%s %s): %i != %i",
-           fs1.index(), fs1.signature()->as_C_string(), fs1.name()->as_C_string(), fs1.offset(), fs2.offset());
+    assert(fs1.name() == fs2.name() && fs1.signature() == fs2.signature(), "%s: field %i differs: %s %s and %s %s",
+           ik1.external_name(), fs1.index(), fs1.signature()->as_C_string(), fs1.name()->as_C_string(), fs2.signature()->as_C_string(), fs2.name()->as_C_string());
+    assert(fs1.access_flags().get_flags() == fs2.access_flags().get_flags(), "%s: different access flags of field %i: " INT32_FORMAT_X " != " INT32_FORMAT_X,
+           ik1.external_name(), fs1.index(), fs1.access_flags().get_flags(), fs2.access_flags().get_flags());
+    assert(fs1.field_flags().as_uint() == fs2.field_flags().as_uint(), "%s: different internal flags of field %i (%s %s): " UINT32_FORMAT_X " != " UINT32_FORMAT_X,
+           ik1.external_name(), fs1.index(), fs1.signature()->as_C_string(), fs1.name()->as_C_string(), fs1.field_flags().as_uint(), fs2.field_flags().as_uint());
+    assert(fs1.offset() == fs2.offset(), "%s: different offset of field %i (%s %s): %i != %i",
+           ik1.external_name(), fs1.index(), fs1.signature()->as_C_string(), fs1.name()->as_C_string(), fs1.offset(), fs2.offset());
   }
   postcond(fs1.done() && fs2.done());
 }
 
 static void assert_methods_match(const InstanceKlass &ik1, const InstanceKlass &ik2) {
+  precond(ik1.name() == ik2.name());
   const Array<Method *> &methods1 = *ik1.methods();
   const Array<Method *> &methods2 = *ik2.methods();
-  assert(methods1.length() == methods2.length(), "number of methods differs: %i != %i",
-         methods1.length(), methods2.length());
+  assert(methods1.length() == methods2.length(), "%s: number of methods differs: %i != %i",
+         ik1.external_name(), methods1.length(), methods2.length());
   for (int i = 0; i < methods1.length(); i++) {
     const Method &method1 = *methods1.at(i);
     // Cannot just get by index because the order of methods with the same name may differ
@@ -131,59 +184,71 @@ static void assert_methods_match(const InstanceKlass &ik1, const InstanceKlass &
                                                   method1.is_overpass() ? Klass::OverpassLookupMode::find : Klass::OverpassLookupMode::skip,
                                                   method1.is_static() ? Klass::StaticLookupMode::find : Klass::StaticLookupMode::skip,
                                                   Klass::PrivateLookupMode::find);
-    assert(method2 != nullptr, "%s not found in the second class", method1.name_and_sig_as_C_string());
+    assert(method2 != nullptr, "%s not found in the second class version", method1.external_name());
 
     assert(method1.result_type() == method2->result_type(), "different result type of method %s: %s != %s",
-           method1.name_and_sig_as_C_string(), type2name(method1.result_type()), type2name(method2->result_type()));
+           method1.external_name(), type2name(method1.result_type()), type2name(method2->result_type()));
     assert(method1.size_of_parameters() == method2->size_of_parameters(), "different word-size of parameters of method %s: %i != %i",
-           method1.name_and_sig_as_C_string(), method1.size_of_parameters(), method2->size_of_parameters());
+           method1.external_name(), method1.size_of_parameters(), method2->size_of_parameters());
     assert(method1.num_stack_arg_slots() == method2->num_stack_arg_slots(), "different number of stack slots for arguments of method %s: %i != %i",
-           method1.name_and_sig_as_C_string(), method1.num_stack_arg_slots(), method2->num_stack_arg_slots());
+           method1.external_name(), method1.num_stack_arg_slots(), method2->num_stack_arg_slots());
     assert(method1.constMethod()->fingerprint() == method2->constMethod()->fingerprint(),
            "different fingerprint of method %s: " UINT64_FORMAT_X " != " UINT64_FORMAT_X,
-           method1.name_and_sig_as_C_string(), method1.constMethod()->fingerprint(), method2->constMethod()->fingerprint());
+           method1.external_name(), method1.constMethod()->fingerprint(), method2->constMethod()->fingerprint());
 
     assert(method1.access_flags().get_flags() == method2->access_flags().get_flags(), "different flags of method %s: " INT32_FORMAT_X " != " INT32_FORMAT_X,
-           method1.name_and_sig_as_C_string(), method1.access_flags().get_flags(), method2->access_flags().get_flags());
+           method1.external_name(), method1.access_flags().get_flags(), method2->access_flags().get_flags());
     assert(method1.constMethod()->flags() == method2->constMethod()->flags(), "different cmethod flags of method %s: " INT32_FORMAT_X " != " INT32_FORMAT_X,
-           method1.name_and_sig_as_C_string(), method1.constMethod()->flags(), method2->constMethod()->flags());
+           method1.external_name(), method1.constMethod()->flags(), method2->constMethod()->flags());
 
     assert(method1.max_stack() == method2->max_stack() && method1.max_locals() == method2->max_locals(),
            "different max stack values of method %s: max stack %i and %i, max locals %i and %i",
-           method1.name_and_sig_as_C_string(), method1.max_stack(), method2->max_stack(), method1.max_locals(), method2->max_locals());
+           method1.external_name(), method1.max_stack(), method2->max_stack(), method1.max_locals(), method2->max_locals());
     assert(ik1.is_rewritten() != ik2.is_rewritten() /* code may change upon rewriting */ || method1.code_size() == method2->code_size(),
-           "different code size of method %s: %i != %i", method1.name_and_sig_as_C_string(), method1.code_size(), method2->code_size());
+           "different code size of method %s: %i != %i", method1.external_name(), method1.code_size(), method2->code_size());
   }
 }
 
 #endif // ASSERT
 
-static void move_constant_pool_cache(ConstantPool *from, ConstantPool *to) {
-  guarantee(to->cache() == nullptr, "destination class already has a constant pool cache");
-  guarantee(from->length() == to->length(), "not the same class");
-  ConstantPoolCache *const cache = from->cache();
-  to->set_cache(cache);
-  cache->set_constant_pool(to);
-  from->set_cache(nullptr);
+static void swap_constants(InstanceKlass *ik1, InstanceKlass *ik2) {
+  guarantee(ik1->constants()->length() == ik2->constants()->length(), "not the same class");
+
+  auto *const tmp = ik1->constants();
+  ik1->set_constants(ik2->constants());
+  ik2->set_constants(tmp);
+
+  ik1->constants()->set_pool_holder(ik1);
+  ik2->constants()->set_pool_holder(ik2);
 }
 
 static void swap_methods(InstanceKlass *ik1, InstanceKlass *ik2) {
   guarantee(ik1->methods()->length() == ik2->methods()->length(), "not the same class");
-  auto *const methods1 = ik1->methods();
-  auto *const methods2 = ik2->methods();
-  ik1->set_methods(methods2);
-  ik2->set_methods(methods1);
-  for (int i = 0; i < methods1->length(); i++) {
-    Method *const method1 = methods1->at(i); // Moving from ik1 into ik2
-    Method *const method2 = methods2->at(i); // Moving from ik2 into ik1
+  assert(ik1->methods()->is_empty() ||
+         (ik1->methods()->at(0)->constants() == ik2->constants() &&
+          ik2->methods()->at(0)->constants() == ik1->constants()),
+         "constant pools must be swapped beforehand");
+
+  auto *const tmp = ik1->methods();
+  ik1->set_methods(ik2->methods());
+  ik2->set_methods(tmp);
+
+#ifdef ASSERT
+  for (int i = 0; i < ik1->methods()->length(); i++) {
+    const Method &method1 = *ik1->methods()->at(i);
+    const Method &method2 = *ik2->methods()->at(i);
+
+    // The constant pools should have been swapped beforehand
+    precond(method1.constants() == ik1->constants());
+    precond(method2.constants() == ik2->constants());
+    precond(method1.method_holder() == ik1);
+    precond(method2.method_holder() == ik2);
+
     // Can only compare names because methods with equal names can be reordered
-    assert(method1->name() == method2->name(), "method #%i of %s has different names: %s and %s",
-           i, ik1->external_name(), method1->name()->as_C_string(), method2->name()->as_C_string());
-    method1->set_constants(ik2->constants());
-    method2->set_constants(ik1->constants());
-    postcond(method1->method_holder() == ik2);
-    postcond(method2->method_holder() == ik1);
+    assert(method1.name() == method2.name(), "method #%i of %s has different names: %s and %s",
+           i, ik1->external_name(), method1.name()->as_C_string(), method2.name()->as_C_string());
   }
+#endif // ASSERT
 
   // Note: if this is an interface, pre-defined implementors may refer to
   // swapped-out methods via their default methods arrays so those also need to
@@ -281,9 +346,11 @@ InstanceKlass *CracClassStateRestorer::define_created_class(InstanceKlass *creat
     if (created_ik->is_rewritten() && !defined_ik->is_rewritten()) {
       precond(defined_ik->is_init_thread(thread));
       // Apply the rewritten state:
-      // 1. Save the constant pool cache created by us to restore it later.
-      move_constant_pool_cache(created_ik->constants(), defined_ik->constants());
-      // 2. Save the rewritten methods, deallocate the non-rewritten ones.
+      // 1. Swap constant pools: firstly, to save the cache created by us and
+      // restore it later, secondly, because the pools may differ in the part
+      // created during the overpass methods' generation.
+      swap_constants(created_ik, defined_ik);
+      // 2. Swap methods to save the rewritten ones.
       swap_methods(created_ik, defined_ik);
       defined_ik->set_rewritten();
       if (log_is_enabled(Debug, crac, class)) {
@@ -484,7 +551,7 @@ static void assert_correct_unresolved_method(const InstanceKlass &cache_holder, 
     ref_holder = vmClasses::VarHandle_klass();
   }
   assert(ref_holder != nullptr, "class %s, cache entry #%i: %s.%s(...) resolved as signature polymorphic",
-         cache_holder.external_name(), unresolved_info_i, ref_holder->external_name(), ref_name->as_C_string());
+         cache_holder.external_name(), unresolved_info_i, ref_holder_name->as_klass_external_name(), ref_name->as_C_string());
   assert(MethodHandles::is_signature_polymorphic_name(ref_holder, ref_name),
          "class %s, cache entry #%i: %s.%s(...) resolved as signature polymorphic",
          cache_holder.external_name(), unresolved_info_i, ref_holder->external_name(), ref_name->as_C_string());
