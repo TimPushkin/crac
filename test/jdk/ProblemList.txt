@@ -471,6 +471,51 @@ java/beans/XMLEncoder/Test6570354.java 8015593 macosx-all
 
 ############################################################################
 
+# jdk_crac
+
+# Bug no. 14 here refers to https://github.com/TimPushkin/crac/issues/14
+jdk/crac/fileDescriptors/CheckpointWithOpenFdsTest.java   14 linux-i586
+jdk/crac/fileDescriptors/CloseProcessPipeTest.java        14 linux-i586
+jdk/crac/fileDescriptors/CloseTcpSocketTest.java          14 linux-i586
+jdk/crac/fileDescriptors/CloseUdpSocketTest.java          14 linux-i586
+jdk/crac/fileDescriptors/CloseUnixSocketTest.java         14 linux-i586
+jdk/crac/fileDescriptors/IgnoredFileDescriptorsTest.java  14 linux-i586
+jdk/crac/fileDescriptors/LoggingFileOpenTest.java         14 linux-i586
+jdk/crac/fileDescriptors/ProcessPipelineTest.java         14 linux-i586
+jdk/crac/fileDescriptors/ReopenFailureTest.java           14 linux-i586
+jdk/crac/fileDescriptors/ReopenFileReadingTest.java       14 linux-i586
+jdk/crac/fileDescriptors/ReopenFileWritingTest.java       14 linux-i586
+jdk/crac/fileDescriptors/ReopenNamedFifoTest.java         14 linux-i586
+jdk/crac/fileDescriptors/SharedLibraryTest.java           14 linux-i586
+jdk/crac/java/lang/System/NanoTimeTest.java               14 linux-i586
+jdk/crac/java/lang/System/TimedWaitingTest.java           14 linux-i586
+jdk/crac/java/lang/Thread/JoinSleepWaitOnCRPauseTest.java 14 linux-i586
+jdk/crac/java/net/InetAddress/ResolveTest.java            14 linux-i586
+jdk/crac/SecureRandom/InterlockTest.java                  14 linux-i586
+jdk/crac/SecureRandom/ReseedTest.java                     14 linux-i586
+jdk/crac/Selector/interruptedSelection/Test.java          14 linux-i586
+jdk/crac/Selector/keyAfterRestore/Test.java               14 linux-i586
+jdk/crac/Selector/multipleSelect/Test.java                14 linux-i586
+jdk/crac/Selector/multipleSelectNow/Test.java             14 linux-i586
+jdk/crac/Selector/multipleSelectSingleClose/Test.java     14 linux-i586
+jdk/crac/Selector/selectAfterWakeup/Test.java             14 linux-i586
+jdk/crac/Selector/selectAndWakeupAfterRestore/Test.java   14 linux-i586
+jdk/crac/Selector/Test970/Test.java                       14 linux-i586
+jdk/crac/Selector/wakeupAfterRestore/Test.java            14 linux-i586
+jdk/crac/Selector/wakeupByClose/Test.java                 14 linux-i586
+jdk/crac/Selector/wakeupByTimeoutAfterRestore/Test.java   14 linux-i586
+jdk/crac/ContainerPidAdjustmentTest.java                  14 linux-i586
+jdk/crac/CracOptionTest.java                              14 linux-i586
+jdk/crac/FailedResourceTest.java                          14 linux-i586
+jdk/crac/DaemonAfterRestore.java                          14 linux-i586
+jdk/crac/LeaveRunning.java                                14 linux-i586
+jdk/crac/PerfMemoryRestoreTest.java                       14 linux-i586
+jdk/crac/ResetStartTimeTest.java                          14 linux-i586
+jdk/crac/RestoreEnvironmentTest.java                      14 linux-i586
+jdk/crac/VMOptionsTest.java                               14 linux-i586
+
+############################################################################
+
 # jdk_lang
 
 java/lang/ProcessHandle/InfoTest.java                           8211847 aix-ppc64
