@@ -89,7 +89,9 @@ gc/stress/TestStressG1Humongous.java 8286554 windows-x64
 
 # :hotspot_runtime
 
-
+# Bug no. 14 in these two refers to https://github.com/TimPushkin/crac/issues/14
+runtime/cds/NonBootLoaderClasses.java 14 generic-all
+runtime/cds/serviceability/ReplaceCriticalClassesForSubgraphs.java 14 generic-all
 runtime/jni/terminatedThread/TestTerminatedThread.java 8219652 aix-ppc64
 runtime/handshake/HandshakeSuspendExitTest.java 8294313 generic-all
 runtime/os/TestTracePageSizes.java#no-options 8267460 linux-aarch64
@@ -102,6 +104,8 @@ runtime/ErrorHandling/CreateCoredumpOnCrash.java 8267433 macosx-x64
 # JDK-8310862 was closed but we're still seeing errors with the updated test
 runtime/ClassInitErrors/TestStackOverflowDuringInit.java 8310862 generic-all
 runtime/CompressedOops/CompressedClassPointers.java 8305765 generic-all
+# Bug no. 14 here refers to https://github.com/TimPushkin/crac/issues/14
+runtime/CommandLine/PrintClasses.java#id1 14 linux-all
 runtime/StackGuardPages/TestStackGuardPagesNative.java 8303612 linux-all
 runtime/ErrorHandling/TestDwarf.java 8305489 linux-all
 runtime/ErrorHandling/MachCodeFramesInErrorFile.java 8313315 linux-ppc64le
@@ -121,6 +125,8 @@ serviceability/sa/TestRevPtrsForInvokeDynamic.java 8241235 generic-all
 
 serviceability/jvmti/ModuleAwareAgents/ThreadStart/MAAThreadStart.java 8225354 windows-all
 serviceability/jvmti/vthread/GetSetLocalTest/GetSetLocalTest.java 8286836 generic-all
+# Bug no. 14 here refers to https://github.com/TimPushkin/crac/issues/14
+serviceability/dcmd/compiler/CodeHeapAnalyticsParams.java 14 linux-all
 serviceability/dcmd/gc/RunFinalizationTest.java 8227120 linux-all,windows-x64
 
 serviceability/sa/ClhsdbCDSCore.java 8267433 macosx-x64
