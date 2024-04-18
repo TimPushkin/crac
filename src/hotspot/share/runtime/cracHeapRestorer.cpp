@@ -483,12 +483,19 @@ void CracHeapRestorer::restore_heap(const HeapDumpTable<UnfilledClassInfo, AnyOb
   // TODO should also restore array and primitive mirrors?
   _instance_classes.iterate([&](HeapDump::ID class_id, InstanceKlass *ik) -> bool {
     if (!ik->is_being_restored()) {
-      // TODO jdk.crac.Core is pre-initialized but we need to restore its fields
-      //  since the global resource context is among them. This discards the new
-      //  global context but we assume it is a subset of the restored one. Such
-      //  special treatment should be removed when we implement restoration of
-      //  all classes (it should stop being pre-initialized then).
-      if (is_jdk_crac_Core(*ik)) {
+      if (ik == vmClasses::System_klass()) {
+        // TODO j.l.System is always pre-initialized but apps frequently set
+        //  system properties and rely on them, so treat them specially. When
+        //  j.l.System restoration is implemented this won't be needed anymore.
+        const HeapDump::ClassDump &dump = _heap_dump.get_class_dump(class_id);
+        restore_system_properties(dump, CHECK_false);
+      } else if (is_jdk_crac_Core(*ik)) {
+        // TODO jdk.crac.Core is pre-initialized but we need to restore its
+        //  fields since the global resource context is among them. This
+        //  discards the new global context but we assume it is a subset of the
+        //  restored one. Such special treatment should be removed when we
+        //  implement restoration of all classes (it should stop being
+        //  pre-initialized then).
         const HeapDump::ClassDump &dump = _heap_dump.get_class_dump(class_id);
         restore_static_fields(ik, dump, CHECK_false);
       }
@@ -1381,7 +1388,7 @@ void CracHeapRestorer::restore_static_fields(InstanceKlass *ik, const HeapDump::
 
   FieldStream fs(ik, true,  // Only fields declared in this class/interface directly
                      true,  // This doesn't metter when the above is true
-                     true); // Exclude injected fields: ther are always non-static
+                     true); // Exclude injected fields: they are always non-static
   u2 static_i = 0;
   while (!fs.eos() && static_i < dump.static_fields.size()) {
     if (!fs.access_flags().is_static()) {
@@ -1446,6 +1453,44 @@ void CracHeapRestorer::restore_static_fields(InstanceKlass *ik, const HeapDump::
     const Handle restored = restore_object(field.value.as_object_id, CHECK);
     set_resolved_references(ik, restored);
   }
+}
+
+void CracHeapRestorer::restore_system_properties(const HeapDump::ClassDump &system_dump, TRAPS) {
+  precond(vmClasses::System_klass_is_loaded());
+  InstanceKlass *const system_ik = vmClasses::System_klass();
+
+  const TempNewSymbol properties_field_name = SymbolTable::new_symbol("props");
+
+  FieldStream fs(system_ik, true,  // Only fields declared in this class/interface directly
+                            true,  // This doesn't metter when the above is true
+                            true); // Exclude injected fields: properties field is not injected
+  u2 static_i = 0;
+  while (!fs.eos() && static_i < system_dump.static_fields.size()) {
+    if (fs.name() == properties_field_name) {
+      assert(fs.access_flags().is_static(), "system properties field must be static");
+      break;
+    }
+    if (fs.access_flags().is_static()) {
+      static_i++;
+    }
+    fs.next();
+  }
+  guarantee(!fs.eos() && static_i < system_dump.static_fields.size(), "system properties field not found");
+  postcond(fs.name() == properties_field_name);
+
+  const HeapDump::ClassDump::Field &field = system_dump.static_fields[static_i];
+#ifdef ASSERT
+  const Symbol *field_name = _heap_dump.get_symbol(field.info.name_id);
+  assert(fs.name() == field_name && is_same_basic_type(fs.signature(), HeapDump::htype2btype(field.info.type)),
+         "expected static field #%i of class %s (ID " HDID_FORMAT ") to be %s %s but it is %s %s in the dump",
+         static_i, system_ik->external_name(), system_dump.id,
+         type2name(Signature::basic_type(fs.signature())), fs.name()->as_C_string(),
+         type2name(HeapDump::htype2btype(field.info.type)), field_name->as_C_string());
+#endif // ASSERT
+
+  const Handle restored = restore_object(field.value.as_object_id, CHECK);
+  instanceHandle mirror(Thread::current(), static_cast<instanceOop>(system_ik->java_mirror()));
+  mirror->obj_field_put(fs.offset(), restored());
 }
 
 // Object restoration

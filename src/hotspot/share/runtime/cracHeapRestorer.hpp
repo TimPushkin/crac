@@ -132,6 +132,7 @@ class CracHeapRestorer : public ClassLoaderProvider {
   void restore_instance_fields(instanceHandle obj, const HeapDump::InstanceDump &dump, TRAPS);
   bool set_static_field_if_special(instanceHandle mirror, const FieldStream &fs, const HeapDump::BasicValue &val, TRAPS);
   void restore_static_fields(InstanceKlass *ik, const HeapDump::ClassDump &dump, TRAPS);
+  void restore_system_properties(const HeapDump::ClassDump &system_dump, TRAPS);
 
   instanceHandle get_void_mirror(const HeapDump::InstanceDump &dump);
   instanceHandle get_string(const HeapDump::InstanceDump &dump, TRAPS);
