@@ -132,7 +132,7 @@ void ClassDumpReader::skip(size_t size, TRAPS) {
 class CracInstanceClassDumpParser : public StackObj /* constructor allocates resources */,
                                     public ClassDumpReader {
  private:
-  const ParsedHeapDump &_heap_dump;                      // Heap dump accompanying the class dump
+  const ParsedHeapDump &_heap_dump;                                       // Heap dump accompanying the class dump
   const HeapDumpTable<InstanceKlass *, AnyObj::C_HEAP> &_created_classes; // Classes already created (super and interfaces should be here)
   const HeapDump::ClassDump &_class_dump;
   ClassLoaderData *const _loader_data;
@@ -141,6 +141,8 @@ class CracInstanceClassDumpParser : public StackObj /* constructor allocates res
   InstanceKlass *_ik = nullptr;
   InstanceKlass::ClassState _class_state;
   HeapDump::ID _class_initialization_error_id;
+  // Contains resource-allocated arrays which can outlive the parser. This
+  // imposes restrictions on resource usage in the parser's implementation.
   InterclassRefs _interclass_refs;
 
  public:
@@ -155,8 +157,9 @@ class CracInstanceClassDumpParser : public StackObj /* constructor allocates res
     log_trace(crac, class, parser)("Parsing instance class " HDID_FORMAT, class_dump.id);
     parse_class(CHECK);
     create_class(CHECK);
-    _finished = true;
     postcond(_ik != nullptr);
+    transfer_resolution_errors();
+    _finished = true;
     if (log_is_enabled(Debug, crac, class, parser)) {
       ResourceMark rm;
       log_debug(crac, class, parser)("Parsed and created instance class " HDID_FORMAT " (%s)", class_dump.id, _ik->external_name());
@@ -202,6 +205,9 @@ class CracInstanceClassDumpParser : public StackObj /* constructor allocates res
 
     SystemDictionary::delete_resolution_error(_cp);
     MetadataFactory::free_metadata(_loader_data, _cp);
+    if (_nest_host_error_message != nullptr) {
+      FREE_C_HEAP_ARRAY(char, _nest_host_error_message);
+    }
 
     InstanceKlass::deallocate_interfaces(_loader_data, _super, _local_interfaces, _transitive_interfaces);
 
@@ -246,6 +252,15 @@ class CracInstanceClassDumpParser : public StackObj /* constructor allocates res
   AnnotationArray *_class_type_annotations = nullptr;     // Runtime(In)VisibleTypeAnnotations class attribute
 
   ConstantPool *_cp = nullptr;
+  struct ResolutionError {
+    int err_table_index;
+    Symbol *error;
+    Symbol *message;
+    Symbol *cause;
+    Symbol *cause_message;
+  };
+  GrowableArrayCHeap<ResolutionError, mtInternal> _resolution_errors; // Resolution errors of symbolic links
+  const char *_nest_host_error_message = nullptr;                     // NestHost resolution error message (nul-terminated, heap-allocated)
 
   u2 _this_class_index;
   InstanceKlass *_super = nullptr;
@@ -479,28 +494,25 @@ class CracInstanceClassDumpParser : public StackObj /* constructor allocates res
     const HeapDump::ID cause_msg_sym_id = cause_sym_id == HeapDump::NULL_ID ? HeapDump::NULL_ID : read_id(true, CHECK);
     Symbol *cause_msg_sym = cause_msg_sym_id == HeapDump::NULL_ID ? nullptr : _heap_dump.get_symbol(cause_msg_sym_id);
 
-    char *nest_host_err_msg = nullptr;
     if (err_table_index == _nest_host_index) {
+      guarantee(_nest_host_error_message == nullptr, "repeated NestHost resolution error");
       const auto nest_host_err_len = read<u4>(CHECK);
-      nest_host_err_msg = NEW_C_HEAP_ARRAY(char, nest_host_err_len + 1, mtInternal);
-      read_raw(nest_host_err_msg, nest_host_err_len, THREAD);
+      char *const nest_host_error_message = NEW_C_HEAP_ARRAY(char, nest_host_err_len + 1, mtInternal);
+      read_raw(nest_host_error_message, nest_host_err_len, THREAD);
       if (HAS_PENDING_EXCEPTION) {
-        FREE_C_HEAP_ARRAY(char, nest_host_err_msg);
+        FREE_C_HEAP_ARRAY(char, nest_host_error_message);
       }
-      nest_host_err_msg[nest_host_err_len] = '\0';
+      nest_host_error_message[nest_host_err_len] = '\0';
+      _nest_host_error_message = nest_host_error_message;
     }
 
-    const constantPoolHandle cph(Thread::current(), _cp);
-#ifdef ASSERT
-    {
-      MutexLocker ml(Thread::current(), SystemDictionary_lock); // ResolutionErrorTable requires this to be locked
-      assert(ResolutionErrorTable::find_entry(cph, err_table_index) == nullptr, "duplicated resolution error");
-    }
-#endif // ASSERT
-    SystemDictionary::add_resolution_error(cph, err_table_index, error_sym, msg_sym, cause_sym, cause_msg_sym);
-    if (nest_host_err_msg != nullptr) {
-      SystemDictionary::add_nest_host_error(cph, err_table_index, nest_host_err_msg);
-    }
+    // Cannot put directly into the global ResolutionErrorTable yet: it requires
+    // the class name to be known
+    // TODO it should be more efficient to just put the erros at the end of the
+    //  class description when the whole InstanceKlass is already available
+    _resolution_errors.append(
+      {err_table_index, error_sym, msg_sym, cause_sym, cause_msg_sym}
+    );
   }
 
   void parse_constant_pool(TRAPS) {
@@ -763,8 +775,7 @@ class CracInstanceClassDumpParser : public StackObj /* constructor allocates res
         const Bytecodes::Code bytecode2 = Bytecodes::cast(raw_bytecode2);
         guarantee(bytecode2 == 0 || bytecode2 == Bytecodes::_invokevirtual, "illegal method resolution bytecode 2: %s", Bytecodes::name(bytecode2));
         if (cache_entry.is_vfinal() || (bytecode1 == Bytecodes::_invokeinterface && !cache_entry.is_forced_virtual())) {
-          guarantee((bytecode1 == Bytecodes::_invokeinterface) != /*XOR*/ (bytecode2 == Bytecodes::_invokevirtual) &&
-                    bytecode1 != Bytecodes::_invokestatic && bytecode1 != Bytecodes::_invokehandle,
+          guarantee(bytecode1 != Bytecodes::_invokestatic && bytecode1 != Bytecodes::_invokehandle,
                     "illegal resolved method data: b1 = %s, b2 = %s, is_vfinal = %s, is_forced_virtual = %s",
                     Bytecodes::name(bytecode1), Bytecodes::name(bytecode2),
                     BOOL_TO_STR(cache_entry.is_vfinal()), BOOL_TO_STR(cache_entry.is_forced_virtual()));
@@ -1611,9 +1622,10 @@ class CracInstanceClassDumpParser : public StackObj /* constructor allocates res
     ik.set_minor_version(_minor_version);
     ik.set_major_version(_major_version);
 
-    ClassLoaderData *non_reflection_loader_data =
-      ClassLoaderData::class_loader_data_or_null(java_lang_ClassLoader::non_reflection_class_loader(ik.class_loader()));
-    ik.set_package(non_reflection_loader_data, nullptr, CHECK);
+    // Note: the loader data used here is different from the one used to
+    // allocate the class if this is a non-strong hidden class
+    precond(!java_lang_ClassLoader::is_reflection_class_loader(ik.class_loader())); // There is a guarantee when obtaining the loader
+    ik.set_package(ClassLoaderData::class_loader_data_or_null(ik.class_loader()), nullptr, CHECK);
 
     ClassFileParser::check_methods_for_intrinsics(&ik);
 
@@ -1666,6 +1678,27 @@ class CracInstanceClassDumpParser : public StackObj /* constructor allocates res
     if (log_is_enabled(Debug, crac, class, parser)) {
       log_debug(crac, class, parser)("  Instance class created: %s", ik.external_name());
     }
+  }
+
+  void transfer_resolution_errors() {
+    precond(_ik != nullptr);
+    const constantPoolHandle cph(Thread::current(), _ik->constants());
+    for (int i = 0; i < _resolution_errors.length(); i++) {
+      ResolutionError &err = *_resolution_errors.adr_at(i);
+#ifdef ASSERT
+      {
+        MutexLocker ml(Thread::current(), SystemDictionary_lock); // ResolutionErrorTable requires this to be locked
+        assert(ResolutionErrorTable::find_entry(cph, err.err_table_index) == nullptr, "duplicated resolution error");
+      }
+#endif // ASSERT
+      SystemDictionary::add_resolution_error(cph, err.err_table_index, err.error, err.message, err.cause, err.cause_message);
+      if (err.err_table_index == _ik->nest_host_index() && _nest_host_error_message != nullptr) {
+        SystemDictionary::add_nest_host_error(cph, err.err_table_index, _nest_host_error_message);
+        _nest_host_error_message = nullptr; // ResolutionErrorTable is now responsible for the deallocation
+      }
+    }
+    guarantee(_nest_host_error_message == nullptr, "lost NestHost resolution error");
+    _resolution_errors.clear_and_deallocate();
   }
 };
 
@@ -1901,6 +1934,9 @@ GrowableArray<Pair<HeapDump::ID, InterclassRefs>> CracClassDumpParser::parse_ins
     //  even if they exist thus duplicating them.
 
     const Handle loader = get_class_loader(class_dump->class_loader_id, CHECK_({}));
+    // First register the class loader to ensure its CLD is created
+    SystemDictionary::register_loader(loader, false);
+    // Then get a CLD for this particular class (differs from the above for non-strong hidden classes)
     ClassLoaderData *const loader_data = SystemDictionary::register_loader(loader, preamble.loading_kind == CracClassDump::ClassLoadingKind::NON_STRONG_HIDDEN);
 
     InterclassRefs refs;
