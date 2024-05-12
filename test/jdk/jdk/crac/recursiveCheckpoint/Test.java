@@ -29,7 +29,6 @@ import java.util.concurrent.atomic.AtomicInteger;
  * @library /test/lib
  * @build Test
  * @run driver/timeout=60 jdk.test.lib.crac.CracTest 10
- * @ignore C/R monitor guarding from recursive checkpoints is temporarily removed due to absence of support in portable mode.
  */
 public class Test implements Resource, CracTest {
     private static final AtomicInteger counter = new AtomicInteger(0);

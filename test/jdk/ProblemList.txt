@@ -491,6 +491,7 @@ jdk/crac/java/lang/System/NanoTimeTest.java               14 linux-i586
 jdk/crac/java/lang/System/TimedWaitingTest.java           14 linux-i586
 jdk/crac/java/lang/Thread/JoinSleepWaitOnCRPauseTest.java 14 linux-i586
 jdk/crac/java/net/InetAddress/ResolveTest.java            14 linux-i586
+jdk/crac/recursiveCheckpoint/Test.java                    14 macosx-x64
 jdk/crac/SecureRandom/InterlockTest.java                  14 linux-i586
 jdk/crac/SecureRandom/ReseedTest.java                     14 linux-i586
 jdk/crac/Selector/interruptedSelection/Test.java          14 linux-i586
