@@ -30,6 +30,7 @@ import jdk.crac.Context;
 import jdk.crac.Resource;
 import jdk.crac.RestoreException;
 import jdk.crac.management.CRaCMXBean;
+import jdk.test.lib.Utils;
 import jdk.test.lib.crac.CracBuilder;
 import jdk.test.lib.crac.CracEngine;
 import jdk.test.lib.crac.CracTest;
@@ -50,7 +51,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * @summary Verify that SHA1PRNG secure random is not interlocked during checkpoint/restore.
  * @library /test/lib
  * @build InterlockTest
- * @run driver/timeout=60 jdk.test.lib.crac.CracTest SHA1PRNG 100
+ * @run driver/timeout=60 jdk.test.lib.crac.CracTest SHA1PRNG
  */
 /*
  * @test id=NativePRNGNonBlocking
@@ -58,7 +59,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * @requires (os.family != "windows")
  * @library /test/lib
  * @build InterlockTest
- * @run driver/timeout=60 jdk.test.lib.crac.CracTest NativePRNGNonBlocking 100
+ * @run driver/timeout=60 jdk.test.lib.crac.CracTest NativePRNGNonBlocking
  */
 /*
  * @test id=NativePRNG
@@ -66,24 +67,21 @@ import java.util.concurrent.atomic.AtomicLong;
  * @requires (os.family != "windows")
  * @library /test/lib
  * @build InterlockTest
- * @run driver/timeout=60 jdk.test.lib.crac.CracTest NativePRNG 100
+ * @run driver/timeout=60 jdk.test.lib.crac.CracTest NativePRNG
  */
 
 /* NativePRNGBlocking is excluded as on some machines /dev/random is exhausted
  * too soon, making the test running too long. */
 
 public class InterlockTest implements Resource, CracTest {
-    private static final long MIN_TIMEOUT = 100;
-    private static final long MAX_TIMEOUT = 1000;
+    private static final long PAUSE_SHORT_MS = Utils.adjustTimeout(25);
+    private static final long PAUSE_LONG_MS = 10 * PAUSE_SHORT_MS;
 
-    private boolean stop = false;
+    private volatile boolean stop = false;
     private SecureRandom sr;
 
-    @CracTestArg(0)
+    @CracTestArg
     String algName;
-
-    @CracTestArg(1)
-    int numThreads;
 
     private class TestThread1 extends Thread {
         @Override
@@ -92,16 +90,16 @@ public class InterlockTest implements Resource, CracTest {
                 set();
             }
         }
-    };
+    }
 
     private class TestThread2 extends Thread implements Resource {
         private final SecureRandom sr;
 
         synchronized void set() {
-            sr.nextInt();
+            Diag.nextInt(sr);
         }
         synchronized void clean() {
-            sr.nextInt();
+            Diag.nextInt(sr);
         }
 
         TestThread2() throws Exception {
@@ -125,14 +123,14 @@ public class InterlockTest implements Resource, CracTest {
         public void afterRestore(Context<? extends Resource> context) throws Exception {
             Diag.timed("TestThread2.afterRestore", Diag.afterRestore, this::set);
         }
-    };
+    }
 
     synchronized void clean() {
-        sr.nextInt();
+        Diag.nextInt(sr);
     }
 
     synchronized void set() {
-        sr.nextInt();
+        Diag.nextInt(sr);
     }
 
     @Override
@@ -157,46 +155,49 @@ public class InterlockTest implements Resource, CracTest {
 
     @Override
     public void exec() throws Exception {
+        // A couple of threads per CPU already contend with the checkpoint; going
+        // further only oversubscribes the machine, and since both these threads'
+        // monitors and the lock the JDK holds across the checkpoint are unfair,
+        // the checkpointing thread can then be starved for minutes (JDK-XXXXXXX).
+        final int numThreads = Math.clamp(2L * Runtime.getRuntime().availableProcessors(), 2, 100);
         Diag.start(algName + ", " + numThreads + " threads");
 
         sr = SecureRandom.getInstance(algName);
         Context.getGlobalContext().register(this);
 
-        Thread[] threads = new Thread[numThreads];
-        for(int i = 0; i < numThreads; i++) {
-            threads[i] = (i % 2 == 0) ?
-                    new TestThread1():
-                    new TestThread2();
-            threads[i].start();
-        };
-        Thread.sleep(MIN_TIMEOUT);
-        set();
-        Thread.sleep(MIN_TIMEOUT);
+        try {
+            for (int i = 0; i < numThreads; i++) {
+                final var thread = (i % 2 == 0) ? new TestThread1(): new TestThread2();
+                thread.start();
+            }
+            Thread.sleep(PAUSE_SHORT_MS);
+            set();
+            Thread.sleep(PAUSE_SHORT_MS);
 
-        Object checkpointLock = new Object();
-        Thread checkpointThread = new Thread(Diag.CHECKPOINT_THREAD) {
-            public void run() {
-                synchronized (checkpointLock) {
+            final var hasCheckpointThreadSucceeded = new boolean[1];
+            final var checkpointThread = new Thread(Diag.CHECKPOINT_THREAD) {
+                public void run() {
+                    final long[] before = Diag.contentionCounters();
                     try {
                         CRaCMXBean.getCRaCMXBean().checkpointRestore();
-                    } catch (CheckpointException e) {
-                        throw new RuntimeException("Checkpoint ERROR " + e);
-                    } catch (RestoreException e) {
-                        throw new RuntimeException("Restore ERROR " + e);
+                        hasCheckpointThreadSucceeded[0] = true;
+                    } catch (CheckpointException | RestoreException e) {
+                        throw new RuntimeException("Checkpoint/restore failed", e);
+                    } finally {
+                        Diag.reportCheckpointContention(before);
                     }
-                    checkpointLock.notify();
                 }
+            };
+            checkpointThread.start();
+            checkpointThread.join();
+            if (!hasCheckpointThreadSucceeded[0]) {
+                throw new RuntimeException("Checkpoint thread failed");
             }
-        };
-        synchronized (checkpointLock) {
-            try {
-                checkpointThread.start();
-                checkpointLock.wait(MAX_TIMEOUT * 2);
-            } catch(Exception e){
-                throw new RuntimeException("Checkpoint/Restore ERROR " + e);
-            }
+
+            Thread.sleep(PAUSE_LONG_MS);
+        } finally {
+            stop = true;
         }
-        Thread.sleep(MAX_TIMEOUT);
 
         Diag.finish();
     }
@@ -216,41 +217,50 @@ public class InterlockTest implements Resource, CracTest {
         static final String CHECKPOINT_THREAD = "checkpointThread";
         static final Stat beforeCheckpoint = new Stat("beforeCheckpoint");
         static final Stat afterRestore = new Stat("afterRestore");
+        static final AtomicInteger interlocked = new AtomicInteger();
 
-        // Dense at first to cover the checkpoint itself even on platforms where
-        // the test completes in a few seconds, then sparse to bound the output
-        // of a run that hangs until the timeout.
-        private static final int DENSE_SAMPLES = 10;
-        private static final long DENSE_PERIOD_MS = 1_000;
+        // Dense at first: a healthy run is over in a couple of seconds, so
+        // anything slower would miss the checkpoint entirely. Then sparse, to
+        // bound the output of a run that hangs until the timeout.
+        private static final int DENSE_SAMPLES = 20;
+        private static final long DENSE_PERIOD_MS = 250;
         private static final long PERIOD_MS = 5_000;
         // Bounded so that jtreg does not truncate away the late samples, which
         // are the interesting ones when the test hangs until the timeout.
         private static final int MAX_STACK_DUMPS = 20;
         private static final int MAX_STACK_DEPTH = 16;
-        private static final int SLOW_MS = 100;
+        private static final long SLOW_NANOS = 100_000_000L; // 100 ms
+        // A nextInt() is a digest plus a few µs of lock handling; anything
+        // above this waited for the checkpoint to release the PRNG.
+        private static final long INTERLOCKED_NANOS = 1_000_000L; // 1 ms
         private static final long T0 = System.nanoTime();
 
-        /** Time spent in resource notifications, i.e. waiting for contended locks. */
+        /**
+         * Time spent in resource notifications, i.e. waiting for contended locks.
+         * Accumulated in nanoseconds: rounding each notification to milliseconds
+         * first would report 51 sub-millisecond waits as a total of 0 ms, which
+         * cannot be told apart from no waiting at all.
+         */
         private static final class Stat {
             private final String name;
             private final AtomicInteger count = new AtomicInteger();
-            private final AtomicLong totalMs = new AtomicLong();
-            private final AtomicLong maxMs = new AtomicLong();
+            private final AtomicLong totalNanos = new AtomicLong();
+            private final AtomicLong maxNanos = new AtomicLong();
 
             Stat(String name) {
                 this.name = name;
             }
 
-            void add(long ms) {
+            void add(long nanos) {
                 count.incrementAndGet();
-                totalMs.addAndGet(ms);
-                maxMs.accumulateAndGet(ms, Math::max);
+                totalNanos.addAndGet(nanos);
+                maxNanos.accumulateAndGet(nanos, Math::max);
             }
 
             @Override
             public String toString() {
-                return String.format("%s=%d in %d ms (max %d ms)",
-                        name, count.get(), totalMs.get(), maxMs.get());
+                return String.format("%s=%d in %.3f ms (max %.3f ms)",
+                        name, count.get(), totalNanos.get() / 1e6, maxNanos.get() / 1e6);
             }
         }
 
@@ -262,12 +272,51 @@ public class InterlockTest implements Resource, CracTest {
 
         /** Reports how long a resource notification had to wait for its lock. */
         static void timed(String what, Stat stat, Runnable body) {
-            long t0 = System.nanoTime();
+            final long t0 = System.nanoTime();
             body.run();
-            long ms = (System.nanoTime() - t0) / 1_000_000;
-            stat.add(ms);
-            if (ms >= SLOW_MS) {
-                log("%s #%d took %d ms", what, stat.count.get(), ms);
+            final long nanos = System.nanoTime() - t0;
+            stat.add(nanos);
+            if (nanos >= SLOW_NANOS) {
+                log("%s #%d took %.3f ms", what, stat.count.get(), nanos / 1e6);
+            }
+        }
+
+        /**
+         * Every nextInt() in this test goes through here so we can count how
+         * often one was interlocked, i.e. blocked on the lock the JDK holds
+         * across the checkpoint. This is the coverage number: if it is zero the
+         * checkpoint never overlapped with a caller and the test degenerated
+         * into an ordering-only check.
+         *
+         * Deliberately wraps only the PRNG call and not the caller's
+         * synchronized method: waiting for the test's own monitor is ordinary
+         * contention between workers and has nothing to do with the interlock.
+         */
+        /** {blockedCount, waitedCount} of the current thread. */
+        static long[] contentionCounters() {
+            final ThreadInfo info = ManagementFactory.getThreadMXBean()
+                    .getThreadInfo(Thread.currentThread().threadId(), 0);
+            return info == null ? new long[] {0, 0}
+                    : new long[] {info.getBlockedCount(), info.getWaitedCount()};
+        }
+
+        /**
+         * How often the checkpointing thread itself had to wait during C/R:
+         * blocked = entering a monitor another thread held (this test's own),
+         * waited = parked, which is where the JDK's PRNG lock shows up.
+         * Zero means it walked past every lock uncontended.
+         */
+        static void reportCheckpointContention(long[] before) {
+            final long[] after = contentionCounters();
+            log("checkpointThread contention: blocked +%d waited +%d",
+                    after[0] - before[0], after[1] - before[1]);
+        }
+
+        static void nextInt(SecureRandom sr) {
+            final long t0 = System.nanoTime();
+            sr.nextInt();
+            if (System.nanoTime() - t0 >= INTERLOCKED_NANOS) {
+                interlocked.incrementAndGet();
             }
         }
 
@@ -282,7 +331,8 @@ public class InterlockTest implements Resource, CracTest {
         }
 
         static void finish() {
-            log("exec() done: %s | %s", beforeCheckpoint, afterRestore);
+            log("exec() done: %s | %s | interlockedWorkerCalls=%d",
+                    beforeCheckpoint, afterRestore, interlocked.get());
             // TEMPORARY: fail on every platform so that CI keeps the .jtr and the
             // windows-x64 output can be compared against the passing platforms.
             throw new RuntimeException("Intentional failure to collect diagnostics");
@@ -310,6 +360,10 @@ public class InterlockTest implements Resource, CracTest {
                     // (deadlocked), and the count drops once workers see 'stop'.
                     long checkpointThreadId = -1;
                     long cpuNanos = 0;
+                    // Not ids.length: a thread may die between getAllThreadIds()
+                    // and getThreadInfo(), which then returns null for it, and
+                    // counting those would report workers that are already gone.
+                    int alive = 0;
                     Map<String, Integer> states = new TreeMap<>();
                     Map<String, Integer> lockedOn = new TreeMap<>();
                     long[] ids = tmx.getAllThreadIds();
@@ -317,6 +371,7 @@ public class InterlockTest implements Resource, CracTest {
                         if (each == null) {
                             continue;
                         }
+                        alive++;
                         if (CHECKPOINT_THREAD.equals(each.getThreadName())) {
                             checkpointThreadId = each.getThreadId();
                         }
@@ -332,14 +387,16 @@ public class InterlockTest implements Resource, CracTest {
                             cpuNanos += Math.max(0, tmx.getThreadCpuTime(id));
                         }
                     }
-                    log("---- threads=%d states=%s lockedOn=%s", ids.length, states, lockedOn);
+                    log("---- threads=%d states=%s lockedOn=%s", alive, states, lockedOn);
                     // Only counts threads alive now, so it drops once the workers
-                    // exit. liveThreadCpu >> wall * cpus means the machine is
+                    // exit. Approaching the CPU count means the machine is
                     // saturated and anything rescheduled to take a lock suffers.
-                    log("     cpus=%d liveThreadCpu=%d ms wall=%d ms | %s | %s",
-                            Runtime.getRuntime().availableProcessors(),
-                            cpuNanos / 1_000_000, (now - T0) / 1_000_000,
-                            beforeCheckpoint, afterRestore);
+                    final long wallNanos = now - T0;
+                    log("     liveThreadCpu=%d ms wall=%d ms (%.1f cores) | %s | %s"
+                                    + " | interlockedWorkerCalls=%d",
+                            cpuNanos / 1_000_000, wallNanos / 1_000_000,
+                            wallNanos == 0 ? 0 : (double) cpuNanos / wallNanos,
+                            beforeCheckpoint, afterRestore, interlocked.get());
 
                     long[] deadlocked = fullInfo
                             ? tmx.findDeadlockedThreads() : tmx.findMonitorDeadlockedThreads();
